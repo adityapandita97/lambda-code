@@ -3,7 +3,7 @@
 ========================
 AWS Lambda
 ========================
-Contributor: Chirag Rathod (Srce Cde)
+Contributor: Aditya Pandita
 ========================
 """
 
