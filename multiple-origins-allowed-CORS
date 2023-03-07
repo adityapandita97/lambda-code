@@ -1,0 +1,33 @@
+import json
+
+host = ".org" #the origin you wish to allow. In your case this would be: host = ".zuluapp.io "
+allowed_methods = ["GET","OPTIONS"] #the methods that are allowed
+
+def lambda_handler(event, context):
+    host_name = event['headers']['origin']
+    requested_method = event['headers']['access-control-request-method']
+
+#if condition to check if the host name is present in the origin.
+#Ensure to NOT include "*" in the host and just include the remaining part
+
+    if host in host_name and requested_method in allowed_methods:
+        return {
+        'statusCode': 200,
+        'headers': {
+            'Access-Control-Allow-Headers': '*',
+            'Access-Control-Allow-Origin': str(host_name),
+            'Access-Control-Allow-Methods': str(requested_method)
+        },
+        'body': json.dumps('Hello from Lambda!')
+        }
+
+    else:
+        return {
+        'statusCode': 200,
+        'headers': {
+            'Access-Control-Allow-Headers': '*',
+            'Access-Control-Allow-Origin': host,
+            'Access-Control-Allow-Methods': str(allowed_methods),
+        },
+        'body': json.dumps('Hello from Lambda!')
+        }
