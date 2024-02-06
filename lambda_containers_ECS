@@ -1,0 +1,41 @@
+#dockerfile
+
+# python3.8 lambda base image
+FROM public.ecr.aws/lambda/python:3.8
+
+# copy requirements.txt to container
+COPY requirements.txt ./
+
+# installing dependencies
+RUN pip3 install -r requirements.txt
+
+# Copy function code to container
+COPY app.py ./
+
+# setting the CMD to your handler file_name.function_name
+CMD [ "app.handler" ]
+
+
+#app.py
+
+#-*- coding: utf-8 -*-
+__author__ = "Aditya Pandita"
+
+import json
+import requests
+
+def handler(event, context):
+
+    # TODO implementation
+    
+    return {
+        'headers': {'Content-Type' : 'application/json'},
+        'statusCode': 200,
+        'body': json.dumps({"message": "Lambda Container image invoked!",
+                            "event": event})
+    }
+
+
+#requirements.txt
+
+requests==2.25.1
