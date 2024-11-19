@@ -1,0 +1,137 @@
+Lambda DynamoDB DDB Put Item Code:
+
+---
+import boto3
+import time
+from time import process_time
+
+client = boto3.client('dynamodb')
+def lambda_handler(event, context):
+
+  data = client.put_item(
+      TableName='cherry_test5',
+      Item={
+        'partition-key': {
+          'S': '007'
+        },
+        'sort-key': {
+          'S': '510'
+        },
+        'id': {
+          'S': 'AdityaDDB_Final'
+        },
+        'eventsource': {
+          'S': 'aadianil@amazon.com'
+        },
+        'CG_ExpiryDate': {
+          'N': '123'
+        },
+    }
+  )
+
+  response = {
+      'statusCode': 200,
+      'body': 'successfully created item!',
+      }
+
+  return response
+
+---
+
+DDB Stream to Lambda Code via DDB Trigger to modify the Table:
+
+---
+import boto3
+import json
+
+def lambda_handler(event, context):
+    client = boto3.client('dynamodb')
+    
+    try:
+        # Process each record from the DynamoDB Stream
+        for record in event['Records']:
+            # Only process INSERT and MODIFY events
+            if record['eventName'] in ['INSERT', 'MODIFY']:
+                # Extract the new image (new version of the item)
+                new_image = record['dynamodb']['NewImage']
+                
+                # Extract values from the stream event
+                # Assuming these fields exist in your stream data
+                partition_key = new_image.get('partition-key', {}).get('S', '')
+                sort_key = new_image.get('sort-key', {}).get('S', '')
+                id_value = new_image.get('id', {}).get('S', '')
+                event_source = new_image.get('eventsource', {}).get('S', '')
+                expiry_date = new_image.get('CG_ExpiryDate', {}).get('N', '')
+
+                # Update the item in the target table
+                data = client.put_item(
+                    TableName='cherry_test5',
+                    Item={
+                        'partition-key': {
+                            'S': partition_key
+                        },
+                        'sort-key': {
+                            'S': sort_key
+                        },
+                        'id': {
+                            'S': id_value
+                        },
+                        'eventsource': {
+                            'S': event_source
+                        },
+                        'CG_ExpiryDate': {
+                            'N': expiry_date
+                        }
+                    }
+                )
+
+        response = {
+            'statusCode': 200,
+            'body': json.dumps('Successfully processed stream and updated items!')
+        }
+        
+    except Exception as e:
+        print(f"Error processing stream: {str(e)}")
+        response = {
+            'statusCode': 500,
+            'body': json.dumps(f'Error processing stream: {str(e)}')
+        }
+
+    return response
+
+-
+
+Sample DynamoDB stream event structure for reference:
+
+{
+    "Records": [
+        {
+            "eventID": "1",
+            "eventName": "INSERT",
+            "eventVersion": "1.0",
+            "eventSource": "aws:dynamodb",
+            "awsRegion": "us-east-1",
+            "dynamodb": {
+                "Keys": {
+                    "partition-key": {"S": "007"},
+                    "sort-key": {"S": "510"}
+                },
+                "NewImage": {
+                    "partition-key": {"S": "007"},
+                    "sort-key": {"S": "510"},
+                    "id": {"S": "AdityaDDB_Final"},
+                    "eventsource": {"S": "aadianil@amazon.com"},
+                    "CG_ExpiryDate": {"N": "123"}
+                },
+                "SequenceNumber": "111",
+                "SizeBytes": 26,
+                "StreamViewType": "NEW_AND_OLD_IMAGES"
+            },
+            "eventSourceARN": "arn:aws:dynamodb:us-east-1:123456789012:table/ExampleTableWithStream/stream/2015-06-27T00:48:05.899"
+        }
+    ]
+}
+
+---
+
+
