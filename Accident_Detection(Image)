@@ -1,0 +1,67 @@
+import json
+import boto3
+import base64
+import os
+import logging
+
+s3 = boto3.client('s3')
+rekognition = boto3.client('rekognition')
+sns = boto3.client('sns')
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+MODEL_ARN = "arn:aws:rekognition:us-east-1:185036908705:project/accident_detection_model/version/accident_detection_model.2025-01-22T18.47.25/1737551846466"
+S3_BUCKET = "aadianil-amazon-llm-bucket"
+SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:185036908705:EMAIL"
+CONFIDENCE_THRESHOLD = 60 
+
+def lambda_handler(event, context):
+    try:
+        # Retrieve information about the S3 trigger event
+        key = event['Records'][0]['s3']['object']['key']
+        
+        # Detect custom labels
+        response = rekognition.detect_custom_labels(
+            Image={'S3Object': {'Bucket': S3_BUCKET, 'Name': key}},
+            ProjectVersionArn=MODEL_ARN,
+            MinConfidence=CONFIDENCE_THRESHOLD
+        )
+        
+        # Check for accident detection
+        is_accident = False
+        accident_confidence = 0
+        for label in response['CustomLabels']:
+            if label['Name'] == 'Accident':
+                is_accident = True
+                accident_confidence = label['Confidence']
+                break
+        
+        # Log the result
+        if is_accident:
+            logger.info(f"Accident detected in image {key} with confidence {accident_confidence:.2f}%")
+            # Send SNS notification only if accident is detected
+            sns.publish(
+                TopicArn=SNS_TOPIC_ARN,
+                Message=f"Accident detected in image {key} with confidence {accident_confidence:.2f}%",
+                Subject="Accident Alert"
+            )
+        else:
+            logger.info(f"No accident detected in image {key}")
+        
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'message': 'Image processed successfully',
+                'is_accident': is_accident,
+                'labels': response['CustomLabels']
+            })
+        }
+    
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
