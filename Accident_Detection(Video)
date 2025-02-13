@@ -1,0 +1,80 @@
+import json
+import boto3
+import re
+import time
+
+# List of labels that might indicate an accident
+ACCIDENT_INDICATORS = ['Car Front - Damaged', 'Crash', 'Accident', 'Collision', 'Emergency', 'Ambulance', 'Police', 'Fire Truck', 'Injury']
+
+def lambda_handler(event, context):
+    s3 = boto3.client('s3')
+    rekognition = boto3.client('rekognition')
+    sns = boto3.client('sns')
+
+    # Get bucket and object key from event
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = event['Records'][0]['s3']['object']['key']
+
+    print(f"Processing video: {key} from bucket: {bucket}")
+
+    # Start label detection job
+    response = rekognition.start_label_detection(
+        Video={'S3Object': {'Bucket': bucket, 'Name': key}},
+        MinConfidence=50
+    )
+    job_id = response['JobId']
+
+    print(f"Started Rekognition job: {job_id}")
+
+    # Wait for the job to complete
+    while True:
+        response = rekognition.get_label_detection(JobId=job_id)
+        status = response['JobStatus']
+        if status in ['SUCCEEDED', 'FAILED']:
+            break
+
+    if status == 'SUCCEEDED':
+        # Process results
+        labels = response['Labels']
+        detected_labels = {}
+        
+        for label in labels:
+            name = label['Label']['Name']
+            confidence = label['Label']['Confidence']
+            if name not in detected_labels or confidence > detected_labels[name]:
+                detected_labels[name] = confidence
+
+        print(f"Detected labels: {', '.join([f'{k} ({v:.2f}%)' for k, v in detected_labels.items()])}")
+
+        # Check if any accident indicators are present
+        accident_indicators_found = [label for label in detected_labels.keys() if label in ACCIDENT_INDICATORS]
+
+        if accident_indicators_found:
+            print(f"Potential accident detected. Indicators: {', '.join(accident_indicators_found)}")
+            analysis = f"Potential accident detected. Indicators: {', '.join(accident_indicators_found)}"
+            notify_user(sns, analysis, bucket, key)
+        else:
+            print("No accident indicators detected.")
+
+    else:
+        print(f"Rekognition job failed with status: {status}")
+
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Video analysis completed')
+    }
+
+def notify_user(sns, analysis, bucket, key):
+    topic_arn = 'arn:aws:sns:us-east-1:185036908705:EMAIL'  # Replace with your Topic ARN
+    message = f'Potential accident detected in the video:\nBucket: {bucket}\nKey: {key}\nAnalysis: {analysis}'
+    
+    try:
+        sns.publish(
+            TopicArn=topic_arn,
+            Message=message,
+            Subject='Accident Detection Alert'
+        )
+        print("Notification sent successfully")
+    except Exception as e:
+        print(f"Error sending notification: {str(e)}")
+
