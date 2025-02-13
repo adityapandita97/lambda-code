@@ -1,0 +1,168 @@
+import json
+import boto3
+import time
+import urllib.parse
+import re
+from datetime import datetime
+
+def lambda_handler(event, context):
+    s3 = boto3.client('s3')
+    transcribe = boto3.client('transcribe')
+    sns = boto3.client('sns')
+
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+
+    print(f"Processing audio file: {key} from bucket: {bucket}")
+
+    job_name = f"transcribe_job_{int(time.time())}"
+    job_uri = f"s3://{bucket}/{key}"
+
+    try:
+        transcribe.start_transcription_job(
+            TranscriptionJobName=job_name,
+            Media={'MediaFileUri': job_uri},
+            MediaFormat='m4a',
+            LanguageCode='en-US'
+        )
+
+        while True:
+            status = transcribe.get_transcription_job(TranscriptionJobName=job_name)
+            if status['TranscriptionJob']['TranscriptionJobStatus'] in ['COMPLETED', 'FAILED']:
+                break
+            time.sleep(5)
+
+        if status['TranscriptionJob']['TranscriptionJobStatus'] == 'COMPLETED':
+            transcript_uri = status['TranscriptionJob']['Transcript']['TranscriptFileUri']
+            transcript_response = urllib.request.urlopen(transcript_uri)
+            transcript_data = json.loads(transcript_response.read())
+            transcript_text = transcript_data['results']['transcripts'][0]['transcript']
+
+            print(f"Transcription: {transcript_text}")
+
+            # Extract key information
+            location = extract_location(transcript_text)
+            severity = extract_severity(transcript_text)
+            date_time = extract_date_time(transcript_text)
+
+            # Check if all required information is present
+            if location and severity and date_time:
+                # Prepare notification message
+                message = f"""Accident Notification:
+                Location: {location}
+                Severity: {severity}
+                Date/Time: {date_time}
+                Full Transcription: {transcript_text}
+                Audio file: s3://{bucket}/{key}"""
+
+                # Send SNS notification
+                topic_arn = 'arn:aws:sns:us-east-1:185036908705:EMAIL'  # Replace with your actual SNS topic ARN
+                sns.publish(
+                    TopicArn=topic_arn,
+                    Message=message,
+                    Subject='Accident Detection Alert'
+                )
+                print("Notification sent successfully")
+            else:
+                print("Insufficient information to generate notification")
+
+            return {
+                'statusCode': 200,
+                'body': json.dumps({
+                    'message': 'Transcription processed',
+                    'notification_sent': bool(location and severity and date_time)
+                })
+            }
+        else:
+            error_message = f"Transcription job failed: {status['TranscriptionJob']['FailureReason']}"
+            print(error_message)
+            return {
+                'statusCode': 500,
+                'body': json.dumps({
+                    'message': 'Transcription failed',
+                    'error': error_message
+                })
+            }
+
+    except Exception as e:
+        error_message = f"Error processing audio file: {str(e)}"
+        print(error_message)
+        return {
+            'statusCode': 500,
+            'body': json.dumps({
+                'message': 'Error occurred',
+                'error': error_message
+            })
+        }
+
+def extract_location(text):
+    # Simple location extraction (improve as needed)
+    locations = re.findall(r'at ([A-Z][a-z]+ ?[A-Z]?[a-z]* Road)', text)
+    if locations:
+        return locations[0]
+    
+    # If no specific road is mentioned, try to find any capitalized words that might be place names
+    words = text.split()
+    for i, word in enumerate(words):
+        if word[0].isupper() and i > 0 and words[i-1].lower() in ['in', 'at', 'near']:
+            return word
+    
+    return None
+
+def extract_severity(text):
+    severity_keywords = ['minor', 'major', 'severe', 'critical', 'fatal']
+    for keyword in severity_keywords:
+        if keyword in text.lower():
+            return keyword.capitalize()
+    return None
+
+def extract_date_time(text):
+    # Look for date and time patterns
+    date_time_patterns = [
+        r'\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}',  # MM/DD/YYYY HH:MM
+        r'\d{1,2}-\d{1,2}-\d{2,4}\s+\d{1,2}:\d{2}',  # MM-DD-YYYY HH:MM
+        r'\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4}\s+\d{1,2}:\d{2}',  # DD Mon YYYY HH:MM
+        r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{2,4}\s+\d{1,2}:\d{2}',  # Mon DD, YYYY HH:MM
+    ]
+    
+    for pattern in date_time_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group()
+    
+    # If no match, try to find date and time separately
+    date_patterns = [
+        r'\d{1,2}/\d{1,2}/\d{2,4}',  # MM/DD/YYYY
+        r'\d{1,2}-\d{1,2}-\d{2,4}',  # MM-DD-YYYY
+        r'\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4}',  # DD Mon YYYY
+        r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{2,4}',  # Mon DD, YYYY
+    ]
+    
+    time_patterns = [
+        r'\d{1,2}:\d{2}',  # HH:MM
+        r'\d{1,2}:\d{2}\s*(?:AM|PM)',  # HH:MM AM/PM
+    ]
+    
+    date_match = None
+    time_match = None
+    
+    for pattern in date_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            date_match = match.group()
+            break
+    
+    for pattern in time_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            time_match = match.group()
+            break
+    
+    if date_match and time_match:
+        return f"{date_match} {time_match}"
+    elif date_match:
+        return date_match
+    elif time_match:
+        return time_match
+    
+    return None
