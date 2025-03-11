@@ -1,0 +1,99 @@
+import boto3
+import json
+import base64
+
+def lambda_handler(event, context):
+    s3_client = boto3.client('s3')
+    
+    try:
+        # Get bucket and object details from the S3 event
+        bucket = event['Records'][0]['s3']['bucket']['name']
+        key = event['Records'][0]['s3']['object']['key']
+        
+        print(f"Processing file: {key} in bucket: {bucket}")
+
+        # Get object metadata
+        head_response = s3_client.head_object(
+            Bucket=bucket,
+            Key=key
+        )
+        
+        metadata = head_response.get('Metadata', {})
+        original_checksum = metadata.get('original-checksum')
+        
+        if not original_checksum:
+            print("No checksum found in metadata")
+            return {
+                'statusCode': 400,
+                'body': json.dumps('No checksum found in metadata')
+            }
+        
+        # Get the ETag (can be used as checksum if not a multipart upload)
+        etag = head_response.get('ETag', '').strip('"')
+        
+        # For simple uploads, ETag is MD5
+        # For SHA256, we need to get the file and calculate it
+        response = s3_client.get_object(
+            Bucket=bucket,
+            Key=key
+        )
+        
+        file_content = response['Body'].read()
+        
+        # Use AWS SDK to calculate checksum
+        put_response = s3_client.put_object(
+            Bucket=bucket,
+            Key=f"{key}-temp",
+            Body=file_content,
+            ChecksumAlgorithm='SHA256'
+        )
+        
+        # Get the AWS-calculated SHA256
+        calculated_checksum = put_response.get('ChecksumSHA256')
+        if calculated_checksum:
+            calculated_checksum = base64.b64decode(calculated_checksum).hex()
+        
+        # Delete the temporary object
+        s3_client.delete_object(
+            Bucket=bucket,
+            Key=f"{key}-temp"
+        )
+        
+        # Compare checksums
+        if calculated_checksum and calculated_checksum.lower() == original_checksum.lower():
+            validation_status = 'PASSED'
+        else:
+            validation_status = 'FAILED'
+        
+        # Update metadata with validation result
+        s3_client.copy_object(
+            Bucket=bucket,
+            Key=key,
+            CopySource={'Bucket': bucket, 'Key': key},
+            Metadata={
+                'original-checksum': original_checksum,
+                'calculated-checksum': calculated_checksum or 'ERROR',
+                'validation-status': validation_status,
+                'checksum-algorithm': 'sha256'
+            },
+            MetadataDirective='REPLACE'
+        )
+        
+        return {
+            'statusCode': 200 if validation_status == 'PASSED' else 400,
+            'body': json.dumps({
+                'message': f'Checksum validation {validation_status}',
+                'file': key,
+                'original_checksum': original_checksum,
+                'calculated_checksum': calculated_checksum,
+                'validation_status': validation_status,
+                'algorithm': 'sha256'
+            }, indent=2)
+        }
+            
+    except Exception as e:
+        print(f"Error processing {key}: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps(f'Error: {str(e)}')
+        }
